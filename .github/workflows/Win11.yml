@@ -317,7 +317,7 @@ jobs:
           PY
           }
 
-          if [ "$NEED" = "yes" ]; then BUDGET=3600; else BUDGET=1200; fi
+          if [ "$NEED" = "yes" ]; then BUDGET=7200; else BUDGET=1200; fi
           echo "Waiting up to $((BUDGET / 60)) min for Windows to answer RDP..."
           READY=no
           i=0
