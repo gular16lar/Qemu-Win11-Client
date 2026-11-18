@@ -1,0 +1,54 @@
+name: Test Connection
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Join tailnet and probe
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+        run: |
+          set -e
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey "$TAILSCALE_AUTHKEY" --hostname conn-check --timeout 60s
+          {
+            echo "conn-check IP: $(sudo tailscale ip -4 | head -n1)"
+            sudo tailscale status
+            for H in win11-client win11-client-2 100.98.18.122; do
+              echo "--- $H"
+              python3 - "$H" <<'PY'
+          import socket,sys
+          h=sys.argv[1]
+          if h[0].isdigit(): host=h
+          else: host=h+'.tail1e427a.ts.net'
+          try: print('resolve',host,'->',socket.gethostbyname(host))
+          except Exception as e: print('resolve FAIL',host,e)
+          for p in (3389,5900):
+            s=None
+            try:
+              s=socket.create_connection((host,p),timeout=6)
+              if p==3389:
+                s.settimeout(6)
+                s.sendall(bytes.fromhex('030000130ee000000000000100080003000000'))
+                d=s.recv(16)
+                print(f'{host}:{p} RDP_OK={d[:2]==bytes.fromhex("0300")} banner={d.hex()}')
+              else:
+                print(f'{host}:{p} TCP_OPEN')
+            except Exception as e:
+              print(f'{host}:{p} FAIL {type(e).__name__}: {e}')
+            finally:
+              if s: s.close()
+          PY
+            done
+          } | tee /tmp/result.txt
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: conn-test
+          path: /tmp/result.txt
+      - name: Cleanup
+        if: always()
+        run: sudo tailscale logout || true
