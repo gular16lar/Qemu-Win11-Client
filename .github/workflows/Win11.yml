@@ -50,8 +50,11 @@ env:
   WIN11_ISO_URL: "https://computernewb.com/isos/windows/en-us_windows_11_iot_enterprise_ltsc_2024_x64_dvd_f6b14814.iso"
   WIN11_ISO_SIZE: "5144817664"
   TS_HOSTNAME: "win11-client"
+  VPS_TUNNEL_HOST: "129.151.173.224"
   RDP_PORT: "3389"
   VNC_PORT: "5900"
+  PUBLIC_RDP_PORT: "3391"
+  PUBLIC_VNC_PORT: "5903"
   DISK_GB: "64"
   AGE_RECIPIENT: age1gm4e3kz2ewq03pqvtfjeragrjpmgmfs9qj5kdzm73v49r7r2dadq3zqvmc
 
@@ -224,6 +227,43 @@ jobs:
           sudo chmod 644 /mnt/OVMF_VARS.fd
           df -h /mnt | tail -1
 
+      - name: Expose RDP and VNC via Oracle reverse tunnel
+        if: always()
+        continue-on-error: true
+        env:
+          VPS_TUNNEL_KEY: ${{ secrets.VPS_TUNNEL_KEY }}
+        run: |
+          set +e
+          if [ -z "$VPS_TUNNEL_KEY" ]; then
+            echo "::warning title=Public access skipped::VPS_TUNNEL_KEY secret not set"
+            exit 0
+          fi
+          printf '%s\n' "$VPS_TUNNEL_KEY" > /tmp/vps_tunnel
+          chmod 600 /tmp/vps_tunnel
+          cat > /tmp/vps_tunnel_loop.sh <<EOF
+          #!/bin/bash
+          while true; do
+            ssh -N -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o ServerAliveInterval=20 -o ServerAliveCountMax=3 \
+              -o ExitOnForwardFailure=yes -i /tmp/vps_tunnel \
+              -R 0.0.0.0:${PUBLIC_RDP_PORT}:localhost:${RDP_PORT} \
+              -R 0.0.0.0:${PUBLIC_VNC_PORT}:localhost:5900 \
+              opc@${VPS_TUNNEL_HOST}
+            sleep 5
+          done
+          EOF
+          chmod +x /tmp/vps_tunnel_loop.sh
+          nohup /tmp/vps_tunnel_loop.sh > /tmp/vps_tunnel.log 2>&1 &
+          sleep 10
+          BANNER=$(timeout 8 bash -c "exec 3<>/dev/tcp/$VPS_TUNNEL_HOST/${PUBLIC_VNC_PORT} && head -c 12 <&3" 2>/dev/null)
+          if [ -n "$BANNER" ]; then
+            echo "Public VNC reachable: $VPS_TUNNEL_HOST:${PUBLIC_VNC_PORT}"
+            echo "RDP tunneled on: $VPS_TUNNEL_HOST:${PUBLIC_RDP_PORT}"
+          else
+            echo "::warning title=Public access::Tunnel started but VNC self-test failed; see /tmp/vps_tunnel.log"
+            tail -5 /tmp/vps_tunnel.log 2>/dev/null || true
+          fi
+
       - name: Prepare TPM
         run: |
           set -e
@@ -357,13 +397,17 @@ jobs:
             echo "Tailscale node: $SELF"
             echo "Tailscale IP: $TSIP"
             echo "RDP (tailscale): $TSIP:${RDP_PORT}  user runner  password runner"
+            echo "RDP (public): ${VPS_TUNNEL_HOST}:${PUBLIC_RDP_PORT}  user runner  password runner"
             echo "VNC (tailscale): $TSIP:${VNC_PORT}  password ${{ env.VNC_PASSWORD }}"
+            echo "VNC (public): ${VPS_TUNNEL_HOST}:${PUBLIC_VNC_PORT}  password ${{ env.VNC_PASSWORD }}"
             echo "Audio: RDP > Local Resources > Remote audio > Play on this computer"
             echo "Outbound downloads: direct via the runner"
           } > connection.txt
           {
             echo "### Windows 11 IoT Enterprise LTSC 2024"
+            echo "- **RDP (public):** \`${VPS_TUNNEL_HOST}:${PUBLIC_RDP_PORT}\`"
             echo "- **RDP (Tailscale):** \`$TSIP:${RDP_PORT}\`"
+            echo "- **VNC (public):** \`${VPS_TUNNEL_HOST}:${PUBLIC_VNC_PORT}\`"
             echo "- **Audio:** RDP client → Local Resources → Remote audio → *Play on this computer*"
             echo "- **Downloads:** direct via the runner"
           } >> $GITHUB_STEP_SUMMARY
